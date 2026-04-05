@@ -1,0 +1,113 @@
+# -------------------
+# Compiled Object files
+# -------------------
+*.o
+*.obj
+*.res
+*.idb
+
+# -------------------
+# Libraries
+# -------------------
+*.lib
+*.a
+*.so
+*.so.*
+*.dll
+*.dylib
+
+# -------------------
+# Executables (Output binaries)
+# -------------------
+*.exe
+*.out
+*.app
+
+# Specific executable names (if you output to repo root)
+hamm
+main
+pha_fim
+pha_huim
+
+# -------------------
+# Build Directories (CMake / Make)
+# -------------------
+build/
+bin/
+lib/
+cmake-build-debug/
+cmake-build-release/
+cmake-build*/
+CMakeCache.txt
+CMakeFiles/
+*.cmake
+install_manifest.txt
+Makefile
+
+# Keep CMakeLists.txt if you use CMake
+!CMakeLists.txt
+
+# -------------------
+# IDE & Editors
+# -------------------
+# VS Code
+.vscode/
+*.code-workspace
+
+# Visual Studio
+.vs/
+Debug/
+Release/
+x64/
+x86/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# CLion / IntelliJ
+.idea/
+
+# -------------------
+# Python / Virtualenv
+# -------------------
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# -------------------
+# OS / System files
+# -------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+*~
+Thumbs.db
+
+# -------------------
+# Data & Logs
+# -------------------
+# Ignore input/output data files to keep repo clean
+*.txt
+*.dat
+*.csv
+*.log
+*.spmf
+*.json
+*.png
+
+# Common experiment outputs
+results/
+logs/
+tmp/
+temp/
+
+# FIFO / scratch dirs (if you use them)
+results/_fifo_patterns/
+_fifo_patterns/
+
+# BUT keep these specific important text files
+!README.md
+!requirements.txt
