@@ -8,7 +8,8 @@
 #include <iomanip>
 #include <cmath>
 #include <chrono>
-#include <cstdlib>   // system(), remove()
+#include <cstdlib>
+#include "pha_fim_gpu.hpp"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -141,6 +142,13 @@ int main(int argc , char* argv[]) {
     // -----------------------
     // Pass 2 (SECOND READ)
     // -----------------------
+    vector<int> items_flat;
+    vector<int> start, tx_len;
+    items_flat.reserve(1 << 20);
+    start.reserve(1 << 20);
+    tx_len.reserve(1 << 20);
+    int cursor = 0;
+
     ifstream sorted_in(sorted_tmp);
     if (!sorted_in.is_open()) return 1;
 
@@ -168,16 +176,33 @@ int main(int argc , char* argv[]) {
         }
 
         if (!filtered.empty()) {
+            // pack
+            start.push_back(cursor);
+            tx_len.push_back((int)filtered.size());
+            items_flat.insert(items_flat.end(), filtered.begin(), filtered.end());
+            cursor += (int)filtered.size();
+
+            // debug
             for (int i = 0; i < (int)filtered.size(); ++i) {
                 outfile << filtered[i] << (i + 1 == (int)filtered.size() ? "" : " ");
             }
             outfile << "\n";
+
             kept_tx++;
         }
     }
 
     sorted_in.close();
     outfile.close();
+
+    int N_effective = (int)start.size();
+    int P = 1024;
+    int iters = 50;
+    uint64_t seed = 42;
+
+    run_gpu_fim(items_flat, start, tx_len,
+                N_effective, m, min_sup,
+                P, iters);
 
     auto end_time = chrono::high_resolution_clock::now();
     long final_memory = get_memory_usage();
