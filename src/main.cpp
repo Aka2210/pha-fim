@@ -39,11 +39,6 @@ long get_memory_usage() {
 #endif
 }
 
-static inline void sort_unique_inplace(vector<int>& v) {
-    sort(v.begin(), v.end());
-    v.erase(unique(v.begin(), v.end()), v.end());
-}
-
 int main(int argc , char* argv[]) {
     ios::sync_with_stdio(false);
     cin.tie(NULL);
