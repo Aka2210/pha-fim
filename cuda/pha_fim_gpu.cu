@@ -155,8 +155,10 @@ __global__ void search_kernel(uint8_t *pop, int *pop_count, int P, int m,
   }
 }
 
-// grid.y = P, grid.x covers transactions
-// one thread handles one (individual, transaction)
+// Load balancing note:
+// Transactions are pre-sorted by length on CPU before packing.
+// The fitness kernel scans this sorted order, so nearby threads tend
+// to process transactions of similar lengths, reducing divergence.
 __global__ void support_fitness_kernel(const uint8_t *pop, const int *pop_count,
                                        int *fitness, const int *items,
                                        const int *start, const int *len, int N,

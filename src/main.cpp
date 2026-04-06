@@ -165,6 +165,10 @@ int main(int argc, char *argv[]) {
 
   string sorted_tmp = output_file + ".sorted_by_len.tmp";
 
+// Load balancing note:
+// sort transactions by length before GPU processing.
+// This helps nearby GPU threads process transactions of similar sizes,
+// reducing workload imbalance and thread divergence in fitness evaluation.
 #ifndef _WIN32
   {
     string cmd = "sort -n -k1,1 " + pass1_tmp + " -o " + sorted_tmp;
