@@ -1,193 +1,238 @@
-# PHA-FIM (Degraded from PHA-HUIM) — GPU Parallel Heuristic Frequent Itemset Mining
+# PHA-FIM Baseline — GPU Parallel Heuristic Frequent Itemset Mining
 
-## 📌 Overview
-This project implements a **GPU-parallel heuristic baseline** inspired by the IEEE TKDE 2024 paper:
+## Overview
+This project implements a **GPU-parallel heuristic baseline for Frequent Itemset Mining (FIM)**, inspired by the framework of the IEEE TKDE 2024 paper:
 
-> **"GPU-Based Efficient Parallel Heuristic Algorithm for High-Utility Itemset Mining in Large Transaction Datasets"**
-> (Wei Fang et al., IEEE TKDE, 2024)
+> **GPU-Based Efficient Parallel Heuristic Algorithm for High-Utility Itemset Mining in Large Transaction Datasets**
+> Wei Fang et al., IEEE TKDE, 2024
 
-The original paper targets **High-Utility Itemset Mining (HUIM)**.
-In this repo, we **degrade the method to classic Frequent Itemset Mining (FIM)** by using:
+The original paper is designed for **High-Utility Itemset Mining (HUIM)**.
+This project **degrades the framework to FIM** in order to study the efficiency of the framework after removing utility-specific components.
 
-- **Fitness = Support (frequency)**
-- **minUtility → minSup**
+### Main degradation from HUIM to FIM
+- `utility`-based fitness -> `support`-based fitness
+- `minUtility` -> `minSupCount`
+- HUIM-oriented item ordering -> FIM-compatible multi-order SM-itemsets
 
-Conceptually, this is equivalent to setting **all item utilities to 1** and treating:
-- `utility(itemset) = support(itemset)` (in transaction-count sense)
-
-> ⚠️ Note: The PHA framework is **heuristic** (population-based).
-> It does **not guarantee** enumerating *all* frequent itemsets like FP-Growth/Eclat.
-> We evaluate **runtime** and **mining quality** (how many frequent patterns are found) against exact baselines.
+This implementation is intended as a **baseline for efficiency analysis**, not as a full reimplementation of the original HUIM paper.
 
 ---
 
-## 🚀 Quick Start
+## Current Project Status
+This repository currently provides a **working FIM baseline** with the following components:
 
-### 1. Environment Setup
-We provide a setup script that automates:
+### Implemented
+- CPU-side two-pass preprocessing
+- 1-item support counting and infrequent-item pruning
+- Three SM-itemsets (three remapped item orders)
+- Packed transaction storage:
+  - `items_flat`
+  - `start`
+  - `tx_len`
+- GPU base population initialization
+- Three-view search on GPU
+- GPU support-based fitness evaluation
+- Ring-topology-inspired population communication / merge
+- Transaction-length sorting as a load-balancing approximation
 
-- System dependency checks (`g++`, **CUDA / nvcc**)
-- Python virtual environment creation
-- Library installation (`psutil` for resource monitoring)
-- C++ / CUDA core compilation
+### Not fully equivalent to the paper
+This implementation is **inspired by** the paper’s framework, but is **not a full HUIM reproduction**.
 
-```bash
-chmod +x setup_env.sh
-./setup_env.sh
-```
-
----
-
-### 2. Data Preparation
-Place raw transaction datasets in `data_raw/`.
-
-**Supported formats:** `.data`, `.txt`
-**Format:** items separated by commas (e.g., `f,n,t,l,won`)
-
-The preprocessing automatically applies **Set Semantics**:
-- Duplicate items in the same transaction are merged/removed before mining.
-
----
-
-### 3. Running Automated Experiments
-Activate the environment:
-
-```bash
-source .venv/bin/activate
-```
-
-#### Full Baseline Reproduction (example)
-```bash
-python3 experiment.py \
-  --datasets "mushroom,connect4,car,kr-vs-kp" \
-  --tx-ratios "10,50,100" \
-  --minsup-ratios "1,2,5" \
-  --override-default-minsup "mushroom=5,connect4=10" \
-  --parallel 4 \
-  --resume
-```
-
-To include **PHA-FIM** in the run, ensure your runner supports it (example):
-```bash
-python3 experiment.py \
-  --datasets "mushroom,connect4" \
-  --tx-ratios "10,50,100" \
-  --minsup-ratios "1,2,5" \
-  --baselines "FPGrowth_itemsets,Eclat,CICLAD,Hamm,PHA" \
-  --parallel 4 \
-  --resume
-```
+Specifically:
+- The mining task is **FIM**, not HUIM
+- The three search views are **FIM-specific substitutes**, not the original TWU / Sup / TU HUIM design
+- The ring topology step is implemented as a **practical CUDA approximation**
+- The load balancing strategy follows the paper’s idea, but is **not a full paper-level greedy scheduling implementation**
 
 ---
 
-## 🧩 What “Degraded to FIM” Means
-The original paper optimizes a HUIM heuristic that searches for **high-utility** patterns using:
+## Design Goal
+The goal of this project is:
 
-- **Population-based search**
-- **GPU-parallel fitness evaluation**
-- **Ring-topology communication**
-- **Sort-mapping compression + load balancing**
+> **To evaluate the efficiency of a degraded FIM version of the paper’s GPU population-based heuristic framework, and use it as a baseline.**
 
-In HUIM, `fitness(X) = utility(X)` and threshold is `minUtility`.
-In our FIM degradation:
+So the main focus is:
+- runtime
+- GPU execution behavior
+- search efficiency after degradation to FIM
 
-- `fitness(X) = support(X)`
-- threshold is `minSupCount = ceil(minsup_rate * N)` where `N` is #transactions
-
-Everything else (search strategy, ring topology, GPU load balancing, compact storage) stays aligned with the paper’s framework.
+rather than exact reproduction of all theoretical details from the original HUIM method.
 
 ---
 
-## 🛠️ Implementation Logic (Paper Framework → FIM Version)
+## Pipeline
 
-### 0. Data Layout: SM + 1D Compressed Dataset (GPU-friendly)
-Following the paper design, transactions are stored as:
+### 1. CPU Preprocessing
+The CPU stage performs two-pass preprocessing before entering the GPU phase.
 
-- `items_flat[]` (all transactions concatenated)
-- `start[i]`, `len[i]` to locate transaction `i`
+#### Pass 1
+- Read the dataset
+- Count 1-item support
+- Compute `minSupCount`
+- Remove infrequent 1-items
 
-This avoids pointer-heavy `vector<vector<int>>` structures on GPU and improves memory coalescing.
+#### SM-itemset generation
+Three FIM-compatible SM-itemsets are built:
+- `sm1`: support descending
+- `sm2`: support descending with reversed tie order
+- `sm3`: support ascending
 
----
+These three item orders are used to simulate multi-view search behavior in the degraded FIM setting.
 
-### 1. CPU Preprocessing (Two-Pass Style)
-The paper performs preprocessing on CPU before copying data to GPU.
+#### Load-balancing-oriented ordering
+Before building GPU datasets, transactions are sorted by **transaction length**.
 
-In our FIM degradation, the CPU stage typically includes:
+This is used to approximate the paper’s load balancing idea:
+- nearby GPU threads process transactions of similar lengths
+- workload imbalance and divergence are reduced during fitness evaluation
 
-1. **Scan 1**: count item supports; optionally record transaction lengths
-2. **Compute minSupCount**: `ceil(minsup_rate * N)`
-3. **Prune 1-infrequent items**: remove items with support < minSupCount
-4. **Sort-Mapping (SM)**: map remaining items to dense IDs `0..m-1`
-   (and optionally build multiple SM orderings to mimic multi-start)
-5. **Pack dataset** into `items_flat/start/len`
+#### Pass 2
+Build three packed datasets:
+- `ds1`
+- `ds2`
+- `ds3`
 
----
+Each dataset is remapped using one SM-itemset.
 
-### 2. GPU Iteration: 3 Evolution Steps (Main Loop)
-Each iteration runs **three GPU steps** (same as the paper’s framework):
-
-#### Step A — MSUS Search (Multi-start + Unbalanced Allocation)
-- Population is represented as **binary vectors / bitsets**
-- Each iteration flips **one bit** per individual (local search)
-- Multi-start runs multiple “views” (in HUIM: TWU/Sup/TU; in FIM: support-based variants)
-
-#### Step B — Parallel Fitness Evaluation (Support Computation)
-- Fitness is computed **in parallel on GPU**
-- For each individual itemset `X`, scan transactions and count:
-  - `support(X) = #{ T | X ⊆ T }`
-- This is the most expensive step → accelerated with GPU parallelism
-
-#### Step C — Ring Topology Communication
-- Individuals communicate with neighbors in a ring structure
-- Preserves strong candidates and maintains population diversity
-- Produces the next-generation population
+Each packed dataset contains:
+- `items_flat`
+- `start`
+- `tx_len`
 
 ---
 
-### 3. GPU Optimization: Load Balancing
-Transactions vary in length → threads may diverge.
-We adopt a **load balancing strategy** to distribute transaction workloads more evenly across threads/blocks, reducing divergence and improving throughput.
+### 2. GPU Main Loop
+The GPU stage executes an iterative heuristic mining process.
+
+#### Step A — Base population initialization
+A base population `d_pop` is initialized on GPU.
+
+- Population size = `P`
+- Each individual is a binary vector of length `m`
+- `m` = number of frequent 1-items after pruning
+
+#### Step B — Three-view branching
+At each iteration, the base population is copied into:
+- `d_pop1`
+- `d_pop2`
+- `d_pop3`
+
+These three branches correspond to three search views.
+
+#### Step C — Three-view search
+A CUDA search kernel performs local mutation-like updates.
+
+Current design:
+- one thread = one individual
+- each individual flips one bit
+- population is divided into three search-range groups
+- each branch uses a different view-aware search policy
+
+This is the degraded FIM counterpart of the paper’s multi-start unbalanced search strategy.
+
+#### Step D — Support-based fitness evaluation
+For each individual:
+- scan transactions
+- count support
+- fitness = support count
+
+This replaces the paper’s utility-based fitness with FIM-style support evaluation.
+
+#### Step E — Ring-topology-inspired merge
+The three search branches are merged back into the base population using a ring-neighborhood comparison mechanism.
+
+This step keeps the implementation closer to the paper’s communication idea while remaining practical for the current FIM baseline.
 
 ---
 
-## 📋 Argument Reference (`experiment.py`)
-| Argument | Description | Example |
-|---|---|---|
-| `--datasets` | Dataset names in `data_raw/` | `mushroom,car` |
-| `--tx-ratios` | Percentage of transactions to use | `10,50,100` |
-| `--tx-size` | Fixed number of transactions (overrides ratios) | `50000` |
-| `--minsup-ratios` | Multipliers for base support | `0.5,1,2` |
-| `--override-default-minsup` | Dataset-specific base minsup (%) | `mushroom=5` |
-| `--parallel` / `--jobs` | Number of parallel processes | `4` |
-| `--resume` | Skip already completed experiments | `--resume` |
-| `--baselines` | Choose baselines to run | `FPGrowth_itemsets,Eclat,CICLAD,Hamm,PHA` |
+## Why This Is a Baseline
+This project should be interpreted as:
+
+- a **framework-level degradation** from HUIM to FIM
+- a **GPU heuristic baseline**
+- a platform for evaluating:
+  - runtime
+  - scalability
+  - effect of three-view search
+  - effect of GPU-side support evaluation
+
+It should **not** be interpreted as:
+- a complete HUIM implementation
+- an exact reproduction of all paper-level details
+- an exact frequent-itemset enumerator like FP-Growth or Eclat
+
+Because this is still a **population-based heuristic method**, it does **not guarantee complete enumeration of all frequent itemsets**.
 
 ---
 
-## 📁 Project Structure
+## Input Format
+Current preprocessing expects transaction data as whitespace-separated integer item IDs, for example:
+
 ```text
-src/                    # CPU preprocessing + host-side driver
-cuda/                   # CUDA kernels: search / fitness / ring (and helpers)
-include/                # Shared structs/types (dataset pack, bitset, params)
-tools/pha_fim            # Compiled PHA-FIM executable (CUDA)
-tools/hamm               # Compiled Hamm baseline (FP-Growth + Single-path opt)
-tools/spmf.jar           # SPMF baselines (FP-Growth/Eclat)
-tools/ciclad             # CICLAD baseline binary
-experiment.py            # Python experiment runner
-setup_env.sh             # Environment setup & build script
-data_raw/                # Input datasets (.data or .txt)
-results/                 # Outputs (metrics, plots, logs)
+1 3 5 8
+2 4
+1 2 3
 ```
 
 ---
 
-## 🧠 Conceptual Summary
-This project provides a **baseline implementation** of the paper’s GPU-parallel heuristic framework,
-but **degraded to FIM**:
+## Build / Run
+Adjust according to your local build setup. The current implementation consists of:
 
-- Keep: **population search + GPU fitness + ring topology + sort-mapping + load balancing**
-- Replace: **utility → support** (HUIM → FIM)
+- `main.cpp`
+- `pha_fim_gpu.hpp`
+- `pha_fim_gpu.cu`
 
-This enables fair benchmarking against classic exact FIM baselines (FP-Growth/Eclat/Hamm/CICLAD)
-under a unified `experiment.py` workflow.
+A typical build uses:
+- `g++` for host code
+- `nvcc` for CUDA compilation
+
+---
+
+## Core Data Structures
+
+### CPU-side
+- `SMItemset`
+- `PackedDataset`
+
+### GPU-side
+- `DevicePackedDataset`
+- `d_pop`, `d_pop1`, `d_pop2`, `d_pop3`
+- `d_count`, `d_count1`, `d_count2`, `d_count3`
+- `d_fit`, `d_fit1`, `d_fit2`, `d_fit3`
+
+---
+
+## Experimental Positioning
+This implementation is best used as:
+
+- a **degraded FIM baseline**
+- a **runtime comparison target**
+- a **GPU heuristic reference point**
+
+for later comparison against:
+- exact FIM algorithms
+- other GPU/parallel baselines
+- improved versions of the framework
+
+---
+
+## Summary
+This repository currently implements:
+
+- a **GPU-parallel heuristic FIM baseline**
+- structurally inspired by the PHA-HUIM paper
+- but explicitly **degraded from HUIM to FIM**
+
+It keeps the framework ideas:
+- multi-view SM-itemsets
+- GPU population search
+- support-based fitness on GPU
+- ring-style communication
+- load-balancing-oriented transaction ordering
+
+while replacing HUIM-specific utility logic with FIM support logic.
+
+This makes it suitable for studying:
+
+> **how the paper-inspired GPU heuristic framework behaves after degradation to FIM, especially in terms of efficiency.**
