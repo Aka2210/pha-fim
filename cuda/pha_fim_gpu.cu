@@ -262,7 +262,9 @@ ring_topology_kernel(uint8_t *base_pop, int *base_count, int *base_fit,
 
 void run_gpu_fim(const PackedDataset &ds1, const PackedDataset &ds2,
                  const PackedDataset &ds3, int N, int m, int min_sup_count,
-                 int P, int iters) {
+                 int P, int iters, vector<uint8_t> &h_pop1, vector<int> &h_fit1,
+                 vector<uint8_t> &h_pop2, vector<int> &h_fit2,
+                 vector<uint8_t> &h_pop3, vector<int> &h_fit3) {
   DevicePackedDataset dds1 = upload_packed_dataset_to_gpu(ds1);
   DevicePackedDataset dds2 = upload_packed_dataset_to_gpu(ds2);
   DevicePackedDataset dds3 = upload_packed_dataset_to_gpu(ds3);
@@ -369,6 +371,27 @@ void run_gpu_fim(const PackedDataset &ds1, const PackedDataset &ds2,
   cout << "[GPU FIM] best support found = " << best
        << ", min_sup_count = " << min_sup_count
        << ", qualified individuals = " << qualified << "\n";
+
+  h_pop1.resize(P * m);
+  h_fit1.resize(P);
+  CUDA_CHECK(cudaMemcpy(h_pop1.data(), d_pop1, P * m * sizeof(uint8_t),
+                        cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(h_fit1.data(), d_fit1, P * sizeof(int),
+                        cudaMemcpyDeviceToHost));
+
+  h_pop2.resize(P * m);
+  h_fit2.resize(P);
+  CUDA_CHECK(cudaMemcpy(h_pop2.data(), d_pop2, P * m * sizeof(uint8_t),
+                        cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(h_fit2.data(), d_fit2, P * sizeof(int),
+                        cudaMemcpyDeviceToHost));
+
+  h_pop3.resize(P * m);
+  h_fit3.resize(P);
+  CUDA_CHECK(cudaMemcpy(h_pop3.data(), d_pop3, P * m * sizeof(uint8_t),
+                        cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(h_fit3.data(), d_fit3, P * sizeof(int),
+                        cudaMemcpyDeviceToHost));
 
   free_device_packed_dataset(dds1);
   free_device_packed_dataset(dds2);

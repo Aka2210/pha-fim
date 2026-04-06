@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,4 +36,6 @@ void free_device_packed_dataset(DevicePackedDataset &dds);
 
 void run_gpu_fim(const PackedDataset &ds1, const PackedDataset &ds2,
                  const PackedDataset &ds3, int N, int m, int min_sup_count,
-                 int P, int iters);
+                 int P, int iters, vector<uint8_t> &h_pop1, vector<int> &h_fit1,
+                 vector<uint8_t> &h_pop2, vector<int> &h_fit2,
+                 vector<uint8_t> &h_pop3, vector<int> &h_fit3);

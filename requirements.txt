@@ -19,3 +19,4 @@ six==1.17.0
 threadpoolctl==3.6.0
 tqdm==4.67.3
 clang-format
+pre-commit

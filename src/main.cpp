@@ -56,6 +56,37 @@ SMItemset build_smitemset(const string &name,
   return sm;
 }
 
+static void
+collect_patterns_from_population(const vector<uint8_t> &pop,
+                                 const vector<int> &fit, int P, int m,
+                                 const vector<int> &new2old, int min_sup,
+                                 map<vector<int>, int> &best_patterns) {
+  for (int pid = 0; pid < P; ++pid) {
+    if (fit[pid] < min_sup)
+      continue;
+
+    vector<int> pattern;
+    pattern.reserve(m);
+
+    for (int j = 0; j < m; ++j) {
+      if (pop[pid * m + j]) {
+        pattern.push_back(new2old[j]);
+      }
+    }
+
+    if (pattern.empty())
+      continue;
+    sort(pattern.begin(), pattern.end());
+
+    auto it = best_patterns.find(pattern);
+    if (it == best_patterns.end()) {
+      best_patterns[pattern] = fit[pid];
+    } else {
+      it->second = max(it->second, fit[pid]);
+    }
+  }
+}
+
 int main(int argc, char *argv[]) {
   ios::sync_with_stdio(false);
   cin.tie(NULL);
@@ -208,10 +239,6 @@ int main(int argc, char *argv[]) {
   if (!sorted_in.is_open())
     return 1;
 
-  ofstream outfile(output_file);
-  if (!outfile.is_open())
-    return 1;
-
   long long kept_tx = 0;
 
   while (getline(sorted_in, line)) {
@@ -260,13 +287,68 @@ int main(int argc, char *argv[]) {
   }
 
   sorted_in.close();
-  outfile.close();
 
   int N_effective = (int)ds1.start.size();
-  int P = 1024;
-  int iters = 50;
+  int P = 4096;
+  int iters = 10000;
 
-  run_gpu_fim(ds1, ds2, ds3, N_effective, m, min_sup, P, iters);
+  if (m == 0 || N_effective == 0) {
+    cout << "[GPU FIM] skip: no frequent items or no effective transactions\n";
+
+    auto end_time = chrono::high_resolution_clock::now();
+    long final_memory = get_memory_usage();
+    auto duration =
+        chrono::duration_cast<chrono::milliseconds>(end_time - start_time);
+
+    cout << "===== Performance Report =====\n";
+    cout << "Time Elapsed: " << duration.count() << " ms\n";
+    cout << "Memory Usage (Peak): " << final_memory << " KB\n";
+    cout << "N (transactions): " << trans_cnt << "\n";
+    cout << "min_sup_count: " << min_sup << "\n";
+    cout << "kept_transactions: " << kept_tx << "\n";
+    cout << "pass1_tmp: " << pass1_tmp << "\n";
+#ifndef _WIN32
+    cout << "sorted_tmp: " << sorted_tmp << "\n";
+#else
+    cout << "sorted_tmp: (windows fallback, not sorted)\n";
+#endif
+    cout << "output_file(filtered): " << output_file << "\n";
+    cout << "==============================\n";
+
+    return 0;
+  }
+
+  vector<uint8_t> h_pop1, h_pop2, h_pop3;
+  vector<int> h_fit1, h_fit2, h_fit3;
+
+  run_gpu_fim(ds1, ds2, ds3, N_effective, m, min_sup, P, iters, h_pop1, h_fit1,
+              h_pop2, h_fit2, h_pop3, h_fit3);
+
+  map<vector<int>, int> best_patterns;
+
+  collect_patterns_from_population(h_pop1, h_fit1, P, m, sm1.new2old, min_sup,
+                                   best_patterns);
+  collect_patterns_from_population(h_pop2, h_fit2, P, m, sm2.new2old, min_sup,
+                                   best_patterns);
+  collect_patterns_from_population(h_pop3, h_fit3, P, m, sm3.new2old, min_sup,
+                                   best_patterns);
+
+  ofstream outfile(output_file);
+  if (!outfile.is_open())
+    return 1;
+
+  for (const auto &kv : best_patterns) {
+    const vector<int> &pattern = kv.first;
+    int sup = kv.second;
+
+    for (size_t i = 0; i < pattern.size(); ++i) {
+      outfile << pattern[i];
+      if (i + 1 < pattern.size())
+        outfile << " ";
+    }
+    outfile << " #SUP: " << sup << "\n";
+  }
+  outfile.close();
 
   auto end_time = chrono::high_resolution_clock::now();
   long final_memory = get_memory_usage();
