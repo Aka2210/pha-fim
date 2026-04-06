@@ -21,7 +21,7 @@ struct PackedDataset {
 struct DevicePackedDataset {
     int* d_items = nullptr;
     int* d_start = nullptr;
-    int* d_len = nullptr;
+    int* d_len   = nullptr;
     int items_count = 0;
     int tx_count = 0;
 };
