@@ -11,7 +11,7 @@ DATASETS = [
     "agaricus-lepiota.data"
 ]
 
-MIN_SUP_RATE = 0.05 
+MIN_SUP_RATE = 0.05
 
 SRC_FILE = "src/Hamm.cpp"
 EXE_FILE = "tools/hamm"
@@ -32,32 +32,32 @@ def compile_cpp():
 
 def run_test(filename):
     data_path = os.path.join(DATA_DIR, filename)
-    
+
     if not os.path.exists(data_path):
         print(f"⚠️  Skipping {filename}: File not found in {DATA_DIR}")
         return False
 
     output_filename = f"{filename}_out.txt"
     output_path = os.path.join(OUTPUT_DIR, output_filename)
-    
+
     print(f"🔹 Testing {filename} (MinSup: {MIN_SUP_RATE*100}%)")
-    
+
     start_time = time.time()
     cmd_hamm = f"./{EXE_FILE} {MIN_SUP_RATE} {data_path} {output_path}"
-    
+
     process = subprocess.run(cmd_hamm, shell=True, capture_output=True, text=True)
-    
+
     if process.returncode != 0:
         print(f"❌ C++ Runtime Error:\n{process.stderr}")
         return False
-    
+
     cpp_time = time.time() - start_time
     print(f"   C++ Finished in {cpp_time:.4f}s")
 
     cmd_verify = f"python3 verify.py {data_path} {output_path}"
-    
+
     verify_process = subprocess.run(cmd_verify, shell=True, capture_output=True, text=True)
-    
+
     output_log = verify_process.stdout
     if "PASSED" in output_log:
         print(f"   ✅ VERIFY PASSED!")
@@ -71,10 +71,10 @@ def run_test(filename):
 
 def main():
     compile_cpp()
-    
+
     results = {}
     print("🚀 Starting Batch Verification...\n" + "="*40)
-    
+
     for ds in DATASETS:
         success = run_test(ds)
         results[ds] = "PASS" if success else "FAIL"
@@ -86,7 +86,7 @@ def main():
         icon = "✅" if status == "PASS" else "❌"
         print(f"{icon} {ds}: {status}")
         if status == "FAIL": all_pass = False
-    
+
     if all_pass:
         print("\n🎉 CONGRATULATIONS! All datasets passed verification.")
     else:

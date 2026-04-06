@@ -3,10 +3,10 @@
 ## 📌 Overview
 This project implements a **GPU-parallel heuristic baseline** inspired by the IEEE TKDE 2024 paper:
 
-> **"GPU-Based Efficient Parallel Heuristic Algorithm for High-Utility Itemset Mining in Large Transaction Datasets"**  
+> **"GPU-Based Efficient Parallel Heuristic Algorithm for High-Utility Itemset Mining in Large Transaction Datasets"**
 > (Wei Fang et al., IEEE TKDE, 2024)
 
-The original paper targets **High-Utility Itemset Mining (HUIM)**.  
+The original paper targets **High-Utility Itemset Mining (HUIM)**.
 In this repo, we **degrade the method to classic Frequent Itemset Mining (FIM)** by using:
 
 - **Fitness = Support (frequency)**
@@ -15,8 +15,8 @@ In this repo, we **degrade the method to classic Frequent Itemset Mining (FIM)**
 Conceptually, this is equivalent to setting **all item utilities to 1** and treating:
 - `utility(itemset) = support(itemset)` (in transaction-count sense)
 
-> ⚠️ Note: The PHA framework is **heuristic** (population-based).  
-> It does **not guarantee** enumerating *all* frequent itemsets like FP-Growth/Eclat.  
+> ⚠️ Note: The PHA framework is **heuristic** (population-based).
+> It does **not guarantee** enumerating *all* frequent itemsets like FP-Growth/Eclat.
 > We evaluate **runtime** and **mining quality** (how many frequent patterns are found) against exact baselines.
 
 ---
@@ -41,7 +41,7 @@ chmod +x setup_env.sh
 ### 2. Data Preparation
 Place raw transaction datasets in `data_raw/`.
 
-**Supported formats:** `.data`, `.txt`  
+**Supported formats:** `.data`, `.txt`
 **Format:** items separated by commas (e.g., `f,n,t,l,won`)
 
 The preprocessing automatically applies **Set Semantics**:
@@ -88,10 +88,10 @@ The original paper optimizes a HUIM heuristic that searches for **high-utility**
 - **Ring-topology communication**
 - **Sort-mapping compression + load balancing**
 
-In HUIM, `fitness(X) = utility(X)` and threshold is `minUtility`.  
+In HUIM, `fitness(X) = utility(X)` and threshold is `minUtility`.
 In our FIM degradation:
 
-- `fitness(X) = support(X)`  
+- `fitness(X) = support(X)`
 - threshold is `minSupCount = ceil(minsup_rate * N)` where `N` is #transactions
 
 Everything else (search strategy, ring topology, GPU load balancing, compact storage) stays aligned with the paper’s framework.
@@ -118,7 +118,7 @@ In our FIM degradation, the CPU stage typically includes:
 1. **Scan 1**: count item supports; optionally record transaction lengths
 2. **Compute minSupCount**: `ceil(minsup_rate * N)`
 3. **Prune 1-infrequent items**: remove items with support < minSupCount
-4. **Sort-Mapping (SM)**: map remaining items to dense IDs `0..m-1`  
+4. **Sort-Mapping (SM)**: map remaining items to dense IDs `0..m-1`
    (and optionally build multiple SM orderings to mimic multi-start)
 5. **Pack dataset** into `items_flat/start/len`
 
@@ -146,7 +146,7 @@ Each iteration runs **three GPU steps** (same as the paper’s framework):
 ---
 
 ### 3. GPU Optimization: Load Balancing
-Transactions vary in length → threads may diverge.  
+Transactions vary in length → threads may diverge.
 We adopt a **load balancing strategy** to distribute transaction workloads more evenly across threads/blocks, reducing divergence and improving throughput.
 
 ---

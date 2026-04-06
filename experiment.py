@@ -427,9 +427,9 @@ def run_spmf(algorithm, input_path, output_path, minsup_percent, keep_pattern_fi
 
 def run_hamm(input_path, output_path, minsup_percent, keep_pattern_files=False):
     hamm_bin = os.path.join(PROJECT_DIR, "tools", "hamm")
-    
+
     minsup_rate = float(minsup_percent) / 100.0
-    
+
     cmd = [hamm_bin, str(minsup_rate), input_path, output_path]
 
     t0 = time.perf_counter()
@@ -453,14 +453,14 @@ def run_hamm(input_path, output_path, minsup_percent, keep_pattern_files=False):
                     if line.strip():
                         count += 1
                         max_len = max(max_len, len(line.split("#SUP:")[0].split()))
-            
+
             if not keep_pattern_files:
                 safe_unlink(output_path)
 
         return {
-            "runtime_sec": runtime_sec, 
-            "pattern_count": count, 
-            "max_itemset_len": max_len, 
+            "runtime_sec": runtime_sec,
+            "pattern_count": count,
+            "max_itemset_len": max_len,
             "cmd": " ".join(cmd)
         }
     except Exception as e:
@@ -1074,31 +1074,31 @@ def main():
             with open(os.path.join(ds_dir, f"metrics_{ds}.json"), "w", encoding="utf-8") as f:
                 json.dump(metrics, f, indent=2)
 
-    
+
     # Plot tx-ratio per dataset
     for ds in datasets:
         ds_dir = os.path.join(RESULTS_DIR, ds)
         ms_default = ms_map.get(ds, 1.0)
         mode = str(args.tx_sweep_minsup_mode).lower()
-    
+
         y_all = {alg: [] for alg in selected_baselines}
         for r in tx_ratios:
             recs = tx_results.get(ds, {}).get(float(r), {})
             for alg in selected_baselines:
                 y_all[alg].append(float(recs[alg]["runtime_sec"]) if alg in recs else float("nan"))
-    
+
         if mode == "count":
             subtitle = f"fixed minsup_count = ceil({ms_default}% * N_full)"
             out_png = os.path.join(ds_dir, f"txratio_runtime_{ds}_count.png")
         else:
             subtitle = f"fixed minsup = {ms_default}%"
             out_png = os.path.join(ds_dir, f"txratio_runtime_{ds}_percent.png")
-    
+
         plot_multi(tx_ratios, y_all,
                    f"{ds} — runtime vs. transaction ratio ({subtitle})",
                    "transaction ratio (%)", "runtime (s)",
                    out_png)
-    
+
     # ----------------------
     # B) minsup ratio sweep (full dataset) in parallel over dataset
     # ----------------------

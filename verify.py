@@ -8,11 +8,11 @@ def load_patterns(filepath):
                 line = line.strip()
                 if not line or "#SUP:" not in line:
                     continue
-                
+
                 parts = line.split("#SUP:")
                 items_str = parts[0].strip()
                 support = int(parts[1].strip())
-                
+
                 items = tuple(sorted([int(x) for x in items_str.split()]))
                 patterns.add((items, support))
     except FileNotFoundError:
@@ -40,10 +40,10 @@ if __name__ == "__main__":
         print("❌ [FAILURE] Mismatch detected!")
         print(f"Hamm count: {len(set_h)}")
         print(f"SPMF count: {len(set_s)}")
-        
+
         only_h = set_h - set_s
         only_s = set_s - set_h
-        
+
         if only_h:
             print(f"\nItems only in Hamm (Potential False Positives): {list(only_h)[:5]} ...")
         if only_s:

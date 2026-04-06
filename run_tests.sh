@@ -2,8 +2,8 @@
 
 # ================= 設定區域 =================
 # 1. 設定你要測試的 Datasets (以空白分隔)
-# DATASETS="car mushroom kr-vs-kp tic-tac-toe" 
-DATASETS="car tic-tac-toe" 
+# DATASETS="car mushroom kr-vs-kp tic-tac-toe"
+DATASETS="car tic-tac-toe"
 
 # 2. 設定你要測試的 MinSup Ratios (以空白分隔)
 # 注意：experiment.py 會將這些數字轉為 float (例如 5 -> 5.0)，腳本會自動處理檔名對應
@@ -27,7 +27,7 @@ echo "========================================"
 for dataset in $DATASETS; do
     echo ""
     echo ">>> 正在處理 Dataset: $dataset"
-    
+
     # ---------------------------------------------------------
     # 步驟 1: 執行 experiment.py 產生結果檔案
     # ---------------------------------------------------------
@@ -43,13 +43,13 @@ for dataset in $DATASETS; do
             --keep-pattern-files \
             --resume
     # done
-    
+
     if [ $? -ne 0 ]; then
         echo "❌ Error: experiment.py 執行失敗，跳過 $dataset 的驗證。"
         continue
     fi
 
-    
+
 done
 
 # ---------------------------------------------------------
@@ -63,19 +63,19 @@ for dataset in $DATASETS; do
         # 技巧：利用 Python 確保檔名格式與 experiment.py 一致 (例如 5 轉成 5.0)
         # 這是因為 experiment.py 內部使用了 float() 轉換
         ms_formatted=$(python3 -c "print(f'{float($ms)}')")
-        
+
         # 定義檔案路徑
         FILE_HAMM="results/${dataset}/Hamm_ms${ms_formatted}.spmf"
         FILE_FP="results/${dataset}/FPGrowth_itemsets_ms${ms_formatted}.spmf"
-        
+
         # 檢查檔案是否存在
         if [[ -f "$FILE_HAMM" && -f "$FILE_FP" ]]; then
             echo -n "   - Checking MinSup $ms_formatted ... "
-            
+
             # 執行 verify.py (假設 verify.py 輸出結果到 stdout)
             # 這裡你可以決定是否要將輸出導向到檔案，目前直接印在螢幕上
             python3 verify.py "$FILE_HAMM" "$FILE_FP"
-            
+
             # 檢查 verify.py 的回傳值 (如果 verify.py 寫得好，錯誤時應該回傳非0)
             if [ $? -eq 0 ]; then
                 echo "✅ Done."
