@@ -190,47 +190,58 @@ __global__ void support_fitness_kernel(const uint8_t *pop, const int *pop_count,
 // one thread = one individual
 // choose best among base / pop1 / pop2 / pop3 by fitness
 __global__ void
-merge_best_kernel(uint8_t *base_pop, int *base_count, int *base_fit,
+ring_topology_kernel(uint8_t *base_pop, int *base_count, int *base_fit,
 
-                  const uint8_t *pop1, const int *count1, const int *fit1,
+                     const uint8_t *pop1, const int *count1, const int *fit1,
 
-                  const uint8_t *pop2, const int *count2, const int *fit2,
+                     const uint8_t *pop2, const int *count2, const int *fit2,
 
-                  const uint8_t *pop3, const int *count3, const int *fit3,
+                     const uint8_t *pop3, const int *count3, const int *fit3,
 
-                  int P, int m) {
+                     int P, int m) {
   int pid = blockIdx.x * blockDim.x + threadIdx.x;
   if (pid >= P)
     return;
 
-  int best_src = 0;
-  int best_fit = base_fit[pid];
+  int left = (pid == 0) ? (P - 1) : (pid - 1);
+  int self = pid;
+  int right = (pid == P - 1) ? 0 : (pid + 1);
 
-  if (fit1[pid] > best_fit) {
-    best_fit = fit1[pid];
-    best_src = 1;
-  }
-  if (fit2[pid] > best_fit) {
-    best_fit = fit2[pid];
-    best_src = 2;
-  }
-  if (fit3[pid] > best_fit) {
-    best_fit = fit3[pid];
-    best_src = 3;
-  }
+  int best_view = 1;
+  int best_pid = left;
+  int best_fit_val = fit1[left];
 
-  if (best_src == 0)
-    return;
+  auto try_candidate = [&](int view, int cand_pid, int cand_fit) {
+    if (cand_fit > best_fit_val) {
+      best_fit_val = cand_fit;
+      best_view = view;
+      best_pid = cand_pid;
+    }
+  };
+
+  // view 1 neighbors
+  try_candidate(1, self, fit1[self]);
+  try_candidate(1, right, fit1[right]);
+
+  // view 2 neighbors
+  try_candidate(2, left, fit2[left]);
+  try_candidate(2, self, fit2[self]);
+  try_candidate(2, right, fit2[right]);
+
+  // view 3 neighbors
+  try_candidate(3, left, fit3[left]);
+  try_candidate(3, self, fit3[self]);
+  try_candidate(3, right, fit3[right]);
 
   const uint8_t *src_pop = nullptr;
   const int *src_count = nullptr;
   const int *src_fit = nullptr;
 
-  if (best_src == 1) {
+  if (best_view == 1) {
     src_pop = pop1;
     src_count = count1;
     src_fit = fit1;
-  } else if (best_src == 2) {
+  } else if (best_view == 2) {
     src_pop = pop2;
     src_count = count2;
     src_fit = fit2;
@@ -241,10 +252,10 @@ merge_best_kernel(uint8_t *base_pop, int *base_count, int *base_fit,
   }
 
   for (int j = 0; j < m; ++j) {
-    base_pop[pid * m + j] = src_pop[pid * m + j];
+    base_pop[pid * m + j] = src_pop[best_pid * m + j];
   }
-  base_count[pid] = src_count[pid];
-  base_fit[pid] = src_fit[pid];
+  base_count[pid] = src_count[best_pid];
+  base_fit[pid] = src_fit[best_pid];
 }
 
 void run_gpu_fim(const PackedDataset &ds1, const PackedDataset &ds2,
@@ -334,7 +345,7 @@ void run_gpu_fim(const PackedDataset &ds1, const PackedDataset &ds2,
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // merge/select step
-    merge_best_kernel<<<pop_grid, pop_block>>>(
+    ring_topology_kernel<<<pop_grid, pop_block>>>(
         d_pop, d_count, d_fit, d_pop1, d_count1, d_fit1, d_pop2, d_count2,
         d_fit2, d_pop3, d_count3, d_fit3, P, m);
     CUDA_CHECK(cudaGetLastError());
