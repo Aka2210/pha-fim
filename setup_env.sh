@@ -37,9 +37,7 @@ source .venv/bin/activate
 echo -e "${GREEN}[3/4] Installing Python Dependencies...${NC}"
 pip install --upgrade pip
 
-pip install pandas numpy matplotlib seaborn tqdm psutil mlxtend
-
-pip freeze > requirements.txt
+pip install -r requirements.txt
 
 echo -e "${GREEN}[4/4] Compiling C++ Project...${NC}"
 if [ -f "src/main.cpp" ]; then
