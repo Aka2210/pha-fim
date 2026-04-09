@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Baseline experiment runner for frequent itemset mining (SPMF: FP-Growth/Eclat, CICLAD).
+# Baseline experiment runner for frequent itemset mining (SPMF: FP-Growth/Eclat, Hamm, CICLAD).
 #
 # Highlights:
 #   - Deterministic preprocessing into SPMF (.spmf) and CICLAD (.dat) formats
@@ -10,7 +10,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FIM Baseline Runner (FP-Growth, Eclat, CICLAD KDD'20 implementation)
+FIM Baseline Runner (FP-Growth, Eclat, Hamm, CICLAD KDD'20 implementation)
 
 This script:
   1) Preprocesses raw datasets into a transaction file where each line is a transaction:
@@ -36,7 +36,7 @@ CICLAD writes:
 We parse the log to get pattern counts per minsup count.
 
 Environment variables (optional):
-  PROJECT_DIR, DATA_DIR, RESULTS_DIR, SPMF_JAR, CICLAD_BIN, RANDOM_SEED
+  PROJECT_DIR, DATA_DIR, RESULTS_DIR, SPMF_JAR, CICLAD_BIN, HAMM_BIN, JAVA_CMD, RANDOM_SEED
 
 Raw datasets expected in DATA_DIR (default: ./data_raw):
   mushroom:    mushroom.csv OR agaricus-lepiota.data
@@ -44,6 +44,7 @@ Raw datasets expected in DATA_DIR (default: ./data_raw):
   tic-tac-toe: tic-tac-toe.data
   car:         car.data OR car.data.csv OR car-evaluation.data
   kr-vs-kp:    kr-vs-kp.data
+  nursery:     nursery.csv (UCI Nursery)
 """
 
 import os, json, random, subprocess, time, pathlib, argparse, shlex
@@ -69,7 +70,7 @@ DATA_DIR    = os.environ.get("DATA_DIR",    os.path.join(PROJECT_DIR, "data_raw"
 RESULTS_DIR = os.environ.get("RESULTS_DIR", os.path.join(PROJECT_DIR, "results"))
 SPMF_JAR    = os.environ.get("SPMF_JAR",    os.path.join(PROJECT_DIR, "tools", "spmf.jar"))
 CICLAD_BIN  = os.environ.get("CICLAD_BIN",  os.path.join(PROJECT_DIR, "tools", "ciclad"))
-PHA_BIN = os.environ.get("PHA_BIN", os.path.join(PROJECT_DIR, "tools", "pha_fim"))
+HAMM_BIN   = os.environ.get("HAMM_BIN",   os.path.join(PROJECT_DIR, "tools", "hamm"))
 RANDOM_SEED = int(os.environ.get("RANDOM_SEED", "42"))
 JAVA_CMD    = os.environ.get("JAVA_CMD") or (shutil.which("java") or "java")
 
@@ -120,24 +121,26 @@ def _parse_spmf_line_for_sup(line: str):
         return None
 
 
-
-DATASETS_ALL = ["mushroom","connect4","kr-vs-kp","tic-tac-toe","car"]
+# [MODIFICATION] Added "nursery" to supported datasets
+DATASETS_ALL = ["mushroom","connect4","kr-vs-kp","tic-tac-toe","car","nursery"]
 
 # Default x-axis points
 DEFAULT_TX_RATIOS = [10,20,30,50,70,100]
 DEFAULT_MINSUP_SWEEP = [0.5,1,2,5,10]
 
 # Default fixed minsup (%) used in tx-ratio sweep
+# [MODIFICATION] Added default minsup for nursery
 DEFAULT_MINSUP = {
     "mushroom":   1.0,
     "connect4":   1.0,
     "kr-vs-kp":   1.0,
     "tic-tac-toe":2.0,
     "car":        5.0,
+    "nursery":    2.0,
 }
 
 # Algorithms we plot
-ALGORITHMS = ["FPGrowth_itemsets", "Eclat", "CICLAD", "Hamm", "PHA"]
+ALGORITHMS = ["FPGrowth_itemsets", "Eclat", "Hamm", "CICLAD"]
 
 
 # ----------------------
@@ -229,12 +232,34 @@ def load_kr_vs_kp():
     return [one_hot_row(r, drop_cols=drop) for _, r in df.iterrows()]
 
 
+# [MODIFICATION] Added loader for nursery dataset
+def load_nursery():
+    candidates = [
+        os.path.join(DATA_DIR, "nursery.csv"),
+        os.path.join(PROJECT_DIR, "data", "nursery.csv"),
+        "./data/nursery.csv"
+    ]
+    p = None
+    for c in candidates:
+        if os.path.exists(c):
+            p = c
+            break
+    if p is None:
+        raise FileNotFoundError(f"Cannot find nursery dataset in {DATA_DIR} or ./data. Tried: {candidates}")
+
+    # Ensure all columns are read as strings to preserve categorical nature
+    df = pd.read_csv(p, dtype=str)
+    # Nursery dataset usually has class as last column; one_hot_row handles it fine
+    return [one_hot_row(r) for _, r in df.iterrows()]
+
+
 LOADERS = {
     "mushroom": load_mushroom,
     "connect4": load_connect4,
     "tic-tac-toe": load_tictactoe,
     "car": load_car,
     "kr-vs-kp": load_kr_vs_kp,
+    "nursery": load_nursery, # [MODIFICATION] Registered nursery loader
 }
 
 
@@ -426,104 +451,165 @@ def run_spmf(algorithm, input_path, output_path, minsup_percent, keep_pattern_fi
 
     return {"runtime_sec": elapsed, "pattern_count": stats["count"], "max_itemset_len": stats["max_len"], "cmd": " ".join(cmd)}
 
-def run_hamm(input_path, output_path, minsup_percent, keep_pattern_files=False):
-    hamm_bin = os.path.join(PROJECT_DIR, "tools", "hamm")
+
+def run_hamm(input_path, output_path, minsup_percent, keep_pattern_files=False, minsup_count_filter=None):
+    """
+    Run Hamm-Algorithm baseline (FP-growth-like) compiled binary.
+
+    Binary interface (from Hamm.cpp):
+      hamm <minsup_rate> <input.spmf> <output_patterns>
+    where minsup_rate is a float in [0,1], and input is a transaction file:
+      <int> <int> <int> ...
+    Output format:
+      "1 2 3 #SUP: 10"
+
+    Disk-usage optimized behavior mirrors run_spmf():
+      - keep_pattern_files=True: write patterns to output_path (regular file) and KEEP it.
+      - keep_pattern_files=False (default): stream patterns via a FIFO (named pipe), count patterns and max itemset length
+        on-the-fly, and do NOT store the pattern output on disk.
+
+    Fixed minsup-count support (for tx-ratio sweep):
+      - minsup_count_filter: Optional[int]
+          If provided, we post-filter patterns by absolute support count (#SUP) >= minsup_count_filter.
+          Note: Hamm also internally prunes by its minsup_rate; to avoid off-by-one due to float rounding
+          in tx-sweep fixed-count mode, the caller should pass a slightly-lower minsup_percent.
+    """
+    hamm_bin = os.environ.get("HAMM_BIN") or HAMM_BIN
+    if (not os.path.isfile(hamm_bin)) or (not os.access(hamm_bin, os.X_OK)):
+        raise FileNotFoundError(
+            f"Hamm binary not found/executable at: {hamm_bin}. "
+            f"Build it into {os.path.join(PROJECT_DIR,'tools','hamm')} or set HAMM_BIN."
+        )
 
     minsup_rate = float(minsup_percent) / 100.0
 
-    cmd = [hamm_bin, str(minsup_rate), input_path, output_path]
+    def _accept_line(line: str) -> bool:
+        if minsup_count_filter is None:
+            return True
+        sup = _parse_spmf_line_for_sup(line)
+        if sup is None:
+            return False
+        return sup >= int(minsup_count_filter)
 
-    t0 = time.perf_counter()
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=None)
-        elapsed = time.perf_counter() - t0
+    # Keep patterns on disk
+    if keep_pattern_files:
+        cmd = [hamm_bin, f"{minsup_rate:.12f}", str(input_path), str(output_path)]
+        t0 = time.perf_counter()
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        elapsed_wall = time.perf_counter() - t0
 
         if proc.returncode != 0:
-            raise RuntimeError(f"Hamm failed: {proc.stderr}")
+            raise RuntimeError(f"Hamm failed:\n{proc.stderr}\nCMD: {' '.join(cmd)}")
 
-        runtime_sec = elapsed
+        # Parse pattern stats
+        count, max_len = 0, 0
+        if os.path.exists(output_path):
+            with open(output_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if not _accept_line(line):
+                        continue
+                    count += 1
+                    max_len = max(max_len, _parse_spmf_line_for_len(line))
+
+        # Parse runtime from stdout if present
+        runtime_sec = elapsed_wall
+        mem_kb = None
         for line in proc.stdout.splitlines():
             if "Time Elapsed:" in line:
-                runtime_sec = float(line.split(":")[1].strip().split()[0]) / 1000.0
-
-        count = 0
-        max_len = 0
-        if os.path.exists(output_path):
-            with open(output_path, "r") as f:
-                for line in f:
-                    if line.strip():
-                        count += 1
-                        max_len = max(max_len, len(line.split("#SUP:")[0].split()))
-
-            if not keep_pattern_files:
-                safe_unlink(output_path)
+                try:
+                    ms = float(line.split("Time Elapsed:")[1].strip().split()[0])
+                    runtime_sec = ms / 1000.0
+                except Exception:
+                    pass
+            if "Memory Usage" in line and "KB" in line:
+                try:
+                    mem_kb = int(re.findall(r"(\d+)\s*KB", line)[0])
+                except Exception:
+                    pass
 
         return {
             "runtime_sec": runtime_sec,
             "pattern_count": count,
             "max_itemset_len": max_len,
-            "cmd": " ".join(cmd)
+            "cmd": " ".join(cmd),
+            "hamm_stdout_ms": runtime_sec * 1000.0,
+            "hamm_peak_mem_kb": mem_kb,
         }
+
+    # FIFO streaming (no large disk output)
+    fifo_path = _mkfifo_pattern_path(prefix="hamm_")
+    try:
+        if os.path.exists(fifo_path):
+            safe_unlink(fifo_path)
+        os.mkfifo(fifo_path, 0o600)
     except Exception as e:
-        raise RuntimeError(f"Hamm execution error: {e}")
+        raise RuntimeError(
+            f"Failed to create FIFO at {fifo_path}. "
+            f"Try setting PATTERN_FIFO_DIR to a writable filesystem. Error: {e}"
+        )
 
-def run_pha(input_path, output_path, minsup_percent, keep_pattern_files=False):
-    pha_bin = PHA_BIN
-    minsup_rate = float(minsup_percent) / 100.0
+    stats = {"count": 0, "max_len": 0}
+    read_err = {"err": None}
 
-    cmd = [pha_bin, str(minsup_rate), input_path, output_path]
+    def _reader():
+        try:
+            with open(fifo_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if not _accept_line(line):
+                        continue
+                    stats["count"] += 1
+                    stats["max_len"] = max(stats["max_len"], _parse_spmf_line_for_len(line))
+        except Exception as e:
+            read_err["err"] = e
+
+    th = threading.Thread(target=_reader, daemon=True)
+    th.start()
+
+    cmd = [hamm_bin, f"{minsup_rate:.12f}", str(input_path), str(fifo_path)]
 
     t0 = time.perf_counter()
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=None)
-        elapsed = time.perf_counter() - t0
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    elapsed_wall = time.perf_counter() - t0
 
-        if proc.returncode != 0:
-            raise RuntimeError(f"PHA failed: {proc.stderr}")
+    th.join(timeout=120.0)
+    safe_unlink(fifo_path)
 
-        runtime_sec = elapsed
-        best_support = 0
-        qualified = 0
+    if read_err["err"] is not None:
+        raise RuntimeError(f"Hamm FIFO reader failed: {read_err['err']}")
 
-        for line in proc.stdout.splitlines():
-            line = line.strip()
+    if proc.returncode != 0:
+        raise RuntimeError(f"Hamm failed:\n{proc.stderr}\nCMD: {' '.join(cmd)}")
 
-            if "Time Elapsed:" in line:
-                # e.g. Time Elapsed: 123 ms
-                try:
-                    runtime_sec = float(line.split(":")[1].strip().split()[0]) / 1000.0
-                except Exception:
-                    pass
+    runtime_sec = elapsed_wall
+    mem_kb = None
+    for line in proc.stdout.splitlines():
+        if "Time Elapsed:" in line:
+            try:
+                ms = float(line.split("Time Elapsed:")[1].strip().split()[0])
+                runtime_sec = ms / 1000.0
+            except Exception:
+                pass
+        if "Memory Usage" in line and "KB" in line:
+            try:
+                mem_kb = int(re.findall(r"(\d+)\s*KB", line)[0])
+            except Exception:
+                pass
 
-            elif "[GPU FIM] best support found =" in line:
-                # e.g. [GPU FIM] best support found = 42, min_sup_count = 10, qualified individuals = 7
-                m1 = re.search(r"best support found\s*=\s*(\d+)", line)
-                m2 = re.search(r"qualified individuals\s*=\s*(\d+)", line)
-                if m1:
-                    best_support = int(m1.group(1))
-                if m2:
-                    qualified = int(m2.group(1))
+    return {
+        "runtime_sec": runtime_sec,
+        "pattern_count": stats["count"],
+        "max_itemset_len": stats["max_len"],
+        "cmd": " ".join(cmd),
+        "hamm_stdout_ms": runtime_sec * 1000.0,
+        "hamm_peak_mem_kb": mem_kb,
+    }
 
-        # 注意：目前 PHA 的 output_path 不是「完整 patterns 檔」
-        # 所以這裡 pattern_count 先用 qualified individuals 當 proxy
-        # baseline 主要看 runtime，pattern_count 僅作輔助指標
-        pattern_count = qualified
-        max_len = 0
-
-        if not keep_pattern_files:
-            safe_unlink(output_path)
-
-        return {
-            "runtime_sec": runtime_sec,
-            "pattern_count": pattern_count,   # proxy, not exact pattern enumeration
-            "max_itemset_len": max_len,
-            "best_support_found": best_support,
-            "qualified_individuals": qualified,
-            "cmd": " ".join(cmd),
-        }
-
-    except Exception as e:
-        raise RuntimeError(f"PHA execution error: {e}")
 
 def parse_ciclad_log(log_path):
     """
@@ -827,7 +913,7 @@ def worker_txratio_point(ds, r, spmf_path, nbr_items, n_tx_full, ms_default, tx_
                 return cache_tx[k_old]
         return None
 
-    for alg in [a for a in baselines if a in {"FPGrowth_itemsets", "Eclat", "Hamm", "PHA"}]:
+    for alg in [a for a in baselines if a in {"FPGrowth_itemsets", "Eclat", "Hamm"}]:
         cached = _cache_lookup(alg)
         if cached is not None:
             recs.append(cached)
@@ -835,13 +921,26 @@ def worker_txratio_point(ds, r, spmf_path, nbr_items, n_tx_full, ms_default, tx_
 
         out_file = os.path.join(ds_dir, f"{alg}_tx{int(r)}.txt")
         if alg == "Hamm":
-            m = run_hamm(sub_path, out_file, effective_minsup_percent, keep_pattern_files)
-        elif alg == "PHA":
-            m = run_pha(sub_path, out_file, effective_minsup_percent, keep_pattern_files)
+            # Hamm internally sets minsup_count = ceil(minsup_rate * N_sub).
+            # In fixed-count mode, avoid a possible off-by-one due to float rounding by nudging rate slightly down.
+            hamm_minsup_percent = float(effective_minsup_percent)
+            if mode == "count" and fixed_minsup_count is not None:
+                hamm_minsup_percent = max(0.0, (float(fixed_minsup_count) - 1e-6) / max(1, int(n_sub)) * 100.0)
+            m = run_hamm(
+                sub_path, out_file,
+                hamm_minsup_percent,
+                keep_pattern_files=keep_pattern_files,
+                minsup_count_filter=spmf_filter_count
+            )
         else:
-            m = run_spmf(alg, sub_path, out_file, effective_minsup_percent, keep_pattern_files, spmf_filter_count)
+            m = run_spmf(
+                alg, sub_path, out_file,
+                effective_minsup_percent,
+                keep_pattern_files=keep_pattern_files,
+                minsup_count_filter=spmf_filter_count
+            )
 
-        rec = {
+        recs.append({
             "algorithm": alg,
             "transaction_ratio_percent": float(r),
             "n_transactions_sub": int(n_sub),
@@ -856,13 +955,7 @@ def worker_txratio_point(ds, r, spmf_path, nbr_items, n_tx_full, ms_default, tx_
             "depth_proxy": int(m["max_itemset_len"]),
             "cmd": m["cmd"],
             "pattern_files_deleted": (not keep_pattern_files),
-        }
-
-        if alg == "PHA":
-            rec["best_support_found"] = int(m.get("best_support_found", 0))
-            rec["qualified_individuals"] = int(m.get("qualified_individuals", 0))
-
-        recs.append(rec)
+        })
 
     if "CICLAD" in baselines:
         cached = _cache_lookup("CICLAD")
@@ -915,21 +1008,23 @@ def worker_minsup_sweep(ds, spmf_path, dat_path, n_tx, nbr_items, minsup_ratios,
     recs = []
 
     for ms in minsup_ratios:
-        for alg in [a for a in baselines if a in {"FPGrowth_itemsets", "Eclat", "Hamm", "PHA"}]:
+        for alg in [a for a in baselines if a in {"FPGrowth_itemsets", "Eclat", "Hamm"}]:
             key = (alg, float(ms), None)
             if resume and key in cache_ms:
                 recs.append(cache_ms[key])
                 continue
 
-            out_file = os.path.join(ds_dir, f"{alg}_ms{ms}.spmf")
+            out_file = os.path.join(ds_dir, f"{alg}_ms{ms}.txt")
             if alg == "Hamm":
-                m = run_hamm(spmf_path, out_file, ms, keep_pattern_files)
-            elif alg == "PHA":
-                m = run_pha(spmf_path, out_file, ms, keep_pattern_files)
+                m = run_hamm(
+                    spmf_path, out_file,
+                    float(ms),
+                    keep_pattern_files=keep_pattern_files
+                )
             else:
                 m = run_spmf(alg, spmf_path, out_file, ms, keep_pattern_files=keep_pattern_files)
 
-            rec = {
+            recs.append({
                 "algorithm": alg,
                 "transaction_ratio_percent": 100.0,
                 "minsup_percent": float(ms),
@@ -938,12 +1033,7 @@ def worker_minsup_sweep(ds, spmf_path, dat_path, n_tx, nbr_items, minsup_ratios,
                 "depth_proxy": int(m["max_itemset_len"]),
                 "cmd": m["cmd"],
                 "pattern_files_deleted": (not keep_pattern_files),
-            }
-            if alg == "PHA":
-                rec["best_support_found"] = int(m.get("best_support_found", 0))
-                rec["qualified_individuals"] = int(m.get("qualified_individuals", 0))
-
-            recs.append(rec)
+            })
 
     if "CICLAD" in baselines:
         ciclad_counts = [int(math.ceil(ms/100.0 * n_tx)) for ms in minsup_ratios]
@@ -1010,8 +1100,8 @@ def main():
                         help="dataset=val, comma-separated. e.g., 'mushroom=1,connect4=1,tic-tac-toe=2,car=5,kr-vs-kp=1'")
     parser.add_argument("--tx-sweep-minsup-mode", type=str, default="percent", choices=["percent","count"],
                         help="For tx-ratio sweep: percent=fixed minsup ratio (default); count=fixed minsup COUNT computed from full dataset size (100% tx * minsup ratio).")
-    parser.add_argument("--baselines", type=str, default="FPGrowth_itemsets,Eclat,CICLAD,Hamm,PHA",
-                        help="Comma-separated baselines to run. Any subset of: FPGrowth_itemsets,Eclat,CICLAD")
+    parser.add_argument("--baselines", type=str, default="FPGrowth_itemsets,Eclat,Hamm,CICLAD",
+                        help="Comma-separated baselines to run. Any subset of: FPGrowth_itemsets,Eclat,Hamm,CICLAD")
     parser.add_argument("--resume", action="store_true",
                         help="skip running points already present in metrics JSON and output files")
     parser.add_argument("--force-preprocess", action="store_true",
@@ -1030,12 +1120,12 @@ def main():
 
     # baselines selection
     selected_baselines = [b.strip() for b in args.baselines.split(",") if b.strip()]
-    allowed_baselines = {"FPGrowth_itemsets", "Eclat", "CICLAD", "Hamm", "PHA"}
+    allowed_baselines = {"FPGrowth_itemsets", "Eclat", "Hamm", "CICLAD"}
     for b in selected_baselines:
         if b not in allowed_baselines:
             raise ValueError(f"Unknown baseline: {b}. Allowed: {sorted(allowed_baselines)}")
     if not selected_baselines:
-        raise ValueError("Empty --baselines. Choose from: FPGrowth_itemsets,Eclat,CICLAD,Hamm,PHA")
+        raise ValueError("Empty --baselines. Choose from: FPGrowth_itemsets,Eclat,CICLAD")
 
     # override default minsup per dataset (optional)
     ms_map = dict(DEFAULT_MINSUP)
@@ -1148,31 +1238,31 @@ def main():
             with open(os.path.join(ds_dir, f"metrics_{ds}.json"), "w", encoding="utf-8") as f:
                 json.dump(metrics, f, indent=2)
 
-
+    
     # Plot tx-ratio per dataset
     for ds in datasets:
         ds_dir = os.path.join(RESULTS_DIR, ds)
         ms_default = ms_map.get(ds, 1.0)
         mode = str(args.tx_sweep_minsup_mode).lower()
-
+    
         y_all = {alg: [] for alg in selected_baselines}
         for r in tx_ratios:
             recs = tx_results.get(ds, {}).get(float(r), {})
             for alg in selected_baselines:
                 y_all[alg].append(float(recs[alg]["runtime_sec"]) if alg in recs else float("nan"))
-
+    
         if mode == "count":
             subtitle = f"fixed minsup_count = ceil({ms_default}% * N_full)"
             out_png = os.path.join(ds_dir, f"txratio_runtime_{ds}_count.png")
         else:
             subtitle = f"fixed minsup = {ms_default}%"
             out_png = os.path.join(ds_dir, f"txratio_runtime_{ds}_percent.png")
-
+    
         plot_multi(tx_ratios, y_all,
                    f"{ds} — runtime vs. transaction ratio ({subtitle})",
                    "transaction ratio (%)", "runtime (s)",
                    out_png)
-
+    
     # ----------------------
     # B) minsup ratio sweep (full dataset) in parallel over dataset
     # ----------------------
