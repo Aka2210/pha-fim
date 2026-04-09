@@ -44,7 +44,7 @@ Raw datasets expected in DATA_DIR (default: ./data_raw):
   tic-tac-toe: tic-tac-toe.data
   car:         car.data OR car.data.csv OR car-evaluation.data
   kr-vs-kp:    kr-vs-kp.data
-  nursery:     nursery.csv (UCI Nursery)
+  nursery:     nursery.csv OR nursery.data (UCI Nursery)
 """
 
 import os, json, random, subprocess, time, pathlib, argparse, shlex
@@ -235,10 +235,22 @@ def load_kr_vs_kp():
 
 # [MODIFICATION] Added loader for nursery dataset
 def load_nursery():
+    """
+    Load Nursery dataset from either:
+      - nursery.csv  (header present)
+      - nursery.data (raw UCI file, no header)
+    Search order:
+      1) DATA_DIR
+      2) PROJECT_DIR/data
+      3) ./data
+    """
     candidates = [
         os.path.join(DATA_DIR, "nursery.csv"),
+        os.path.join(DATA_DIR, "nursery.data"),
         os.path.join(PROJECT_DIR, "data", "nursery.csv"),
-        "./data/nursery.csv"
+        os.path.join(PROJECT_DIR, "data", "nursery.data"),
+        "./data/nursery.csv",
+        "./data/nursery.data",
     ]
     p = None
     for c in candidates:
@@ -246,11 +258,18 @@ def load_nursery():
             p = c
             break
     if p is None:
-        raise FileNotFoundError(f"Cannot find nursery dataset in {DATA_DIR} or ./data. Tried: {candidates}")
+        raise FileNotFoundError(f"Cannot find nursery dataset in {DATA_DIR} / PROJECT_DIR/data / ./data. Tried: {candidates}")
 
-    # Ensure all columns are read as strings to preserve categorical nature
-    df = pd.read_csv(p, dtype=str)
-    # Nursery dataset usually has class as last column; one_hot_row handles it fine
+    if str(p).endswith(".data"):
+        # Raw UCI nursery.data has no header
+        df = pd.read_csv(p, header=None, dtype=str)
+        df.columns = list(range(df.shape[1]))
+    else:
+        # Local nursery.csv is expected to have a header row
+        df = pd.read_csv(p, dtype=str)
+        # Normalize to integer column labels so one_hot_row tokenization remains consistent
+        df.columns = list(range(df.shape[1]))
+
     return [one_hot_row(r) for _, r in df.iterrows()]
 
 
@@ -985,6 +1004,57 @@ def worker_txratio_point(ds, r, spmf_path, nbr_items, n_tx_full, ms_default, tx_
         spmf_filter_count = int(fixed_minsup_count)
 
     recs = []
+
+    # Degenerate fixed-count case:
+    # if the fixed minsup count (derived from the full dataset size) exceeds the
+    # number of transactions in the subsampled dataset, then no itemset can ever
+    # satisfy the threshold. Short-circuit to avoid wasting time on all baselines.
+    if mode == "count" and int(minsup_count_threshold) > int(n_sub):
+        for alg in [a for a in baselines if a in {"FPGrowth_itemsets", "Eclat", "Hamm", "PHA"}]:
+            rec = {
+                "algorithm": alg,
+                "transaction_ratio_percent": float(r),
+                "n_transactions_sub": int(n_sub),
+                "minsup_percent": float(ms_default),
+                "tx_sweep_minsup_mode": mode,
+                "effective_minsup_percent": 100.0,
+                "minsup_count_threshold": int(minsup_count_threshold),
+                "fixed_minsup_count": int(fixed_minsup_count) if fixed_minsup_count is not None else None,
+                "base_n_tx_for_fixed_minsup": int(base_n_tx_for_fixed) if base_n_tx_for_fixed is not None else None,
+                "runtime_sec": 0.0,
+                "pattern_count": 0,
+                "depth_proxy": 0,
+                "cmd": "(skipped: fixed_minsup_count > n_transactions_sub)",
+                "pattern_files_deleted": True,
+                "degenerate_fixed_count": True,
+            }
+            if alg == "PHA":
+                rec["best_support_found"] = 0
+                rec["qualified_individuals"] = 0
+                rec["pha_min_sup_count"] = int(minsup_count_threshold)
+            recs.append(rec)
+
+        if "CICLAD" in baselines:
+            recs.append({
+                "algorithm": "CICLAD",
+                "transaction_ratio_percent": float(r),
+                "n_transactions_sub": int(n_sub),
+                "minsup_percent": float(ms_default),
+                "tx_sweep_minsup_mode": mode,
+                "effective_minsup_percent": 100.0,
+                "minsup_count_threshold": int(minsup_count_threshold),
+                "minsup_count": int(minsup_count_threshold),
+                "fixed_minsup_count": int(fixed_minsup_count) if fixed_minsup_count is not None else None,
+                "base_n_tx_for_fixed_minsup": int(base_n_tx_for_fixed) if base_n_tx_for_fixed is not None else None,
+                "runtime_sec": 0.0,
+                "pattern_count": 0,
+                "depth_proxy": 0,
+                "cmd": "(skipped: fixed_minsup_count > n_transactions_sub)",
+                "pattern_files_deleted": True,
+                "degenerate_fixed_count": True,
+            })
+
+        return ds, float(r), recs
 
     def _cache_lookup(alg_name: str):
         if not resume:
