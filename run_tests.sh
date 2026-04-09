@@ -4,8 +4,19 @@ set -euo pipefail
 
 # ================= 設定區域 =================
 DATASETS="car tic-tac-toe"
-MINSUPS_LIST="100 90 80 70 60 50 40 30 20 10 5 2 1 0.5"
-BASELINES="FPGrowth_itemsets,PHA"
+
+# tx-ratio sweep 的固定 minsup 百分比
+# 在 --tx-sweep-minsup-mode count 下，
+# experiment.py 會先用這個百分比 * full dataset size 算出固定 minsup_count
+TX_SWEEP_BASE_MINSUP_PERCENT="${TX_SWEEP_BASE_MINSUP_PERCENT:-5}"
+
+# tx sweep 的 x 軸
+TX_RATIOS="${TX_RATIOS:-10,20,30,50,70,100}"
+
+# minsup sweep 的 x 軸（若你只想看 tx sweep，可先留著）
+MINSUPS_LIST="${MINSUPS_LIST:-100 90 80 70 60 50 40 30 20 10 5 2 1 0.5}"
+
+BASELINES="${BASELINES:-FPGrowth_itemsets,PHA}"
 
 PHA_BIN="tools/pha_fim"
 PHA_MAIN="src/main.cpp"
@@ -15,25 +26,21 @@ INCLUDE_FLAGS="-Iinclude"
 NVCC_BIN="${NVCC_BIN:-nvcc}"
 
 # ---- 資源限制（保守值）----
-# experiment.py 平行 worker 數
 JOBS="${JOBS:-4}"
-
-# CPU 數學函式庫 thread 限制
 OMP_THREADS="${OMP_THREADS:-8}"
 
+# 啟用學長說的 count 模式
+TX_SWEEP_MINSUP_MODE="${TX_SWEEP_MINSUP_MODE:-count}"
+
 # 可手動指定 GPU；不指定則自動挑最空的一張
-# 例如：CUDA_DEVICE=3 bash run_tests.sh
 CUDA_DEVICE="${CUDA_DEVICE:-}"
 
-# 記憶體 / CPU 使用量檢查門檻（百分比）
 MAX_CPU_USAGE_PERCENT=50
 MAX_MEM_USAGE_PERCENT=50
 MAX_GPU_MEM_USAGE_PERCENT=50
 # ===========================================
 
 MINSUPS_CMD_ARG=$(echo "$MINSUPS_LIST" | tr ' ' ',')
-
-
 
 detect_cuda_arch_flag() {
     if command -v nvidia-smi >/dev/null 2>&1; then
@@ -55,7 +62,6 @@ pick_idle_gpu() {
         return 0
     fi
 
-    # 取 memory.used 最小的 GPU index
     nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits 2>/dev/null \
         | sort -t',' -k2,2n \
         | head -n 1 \
@@ -65,7 +71,6 @@ pick_idle_gpu() {
 check_system_load() {
     echo "[Check] CPU / Memory / GPU usage before run"
 
-    # CPU / MEM
     if command -v free >/dev/null 2>&1; then
         MEM_TOTAL=$(free -m | awk '/Mem:/ {print $2}')
         MEM_USED=$(free -m | awk '/Mem:/ {print $3}')
@@ -78,7 +83,6 @@ check_system_load() {
         MEM_USED_PCT=0
     fi
 
-    # load average 粗略提示
     LOAD_AVG=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo "N/A")
     CPU_THREADS=$(nproc 2>/dev/null || echo "N/A")
 
@@ -91,7 +95,6 @@ check_system_load() {
         echo "    建議先用 htop / free -h 確認是否有人在用。"
     fi
 
-    # GPU
     if command -v nvidia-smi >/dev/null 2>&1; then
         echo "  - GPU status:"
         nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader
@@ -112,13 +115,11 @@ check_system_load() {
 
 ARCH_FLAG=$(detect_cuda_arch_flag)
 
-# 限制 CPU threads
 export OMP_NUM_THREADS="$OMP_THREADS"
 export OPENBLAS_NUM_THREADS="$OMP_THREADS"
 export MKL_NUM_THREADS="$OMP_THREADS"
 export NUMEXPR_NUM_THREADS="$OMP_THREADS"
 
-# 選 GPU
 if [[ -z "$CUDA_DEVICE" ]]; then
     CUDA_DEVICE=$(pick_idle_gpu)
 fi
@@ -130,12 +131,15 @@ fi
 echo "========================================"
 echo "開始自動化測試流程"
 echo "Datasets : $DATASETS"
-echo "MinSups  : $MINSUPS_CMD_ARG"
 echo "Baselines: $BASELINES"
 echo "ARCH     : $ARCH_FLAG"
 echo "JOBS     : $JOBS"
 echo "OMP_THD  : $OMP_THREADS"
 echo "GPU      : ${CUDA_VISIBLE_DEVICES:-not-set}"
+echo "TX mode  : $TX_SWEEP_MINSUP_MODE"
+echo "TX minsup: ${TX_SWEEP_BASE_MINSUP_PERCENT}% of full dataset"
+echo "TX ratios: $TX_RATIOS"
+echo "MS sweep : $MINSUPS_CMD_ARG"
 echo "========================================"
 
 check_system_load
@@ -171,8 +175,9 @@ for dataset in $DATASETS; do
         --baselines "$BASELINES" \
         --datasets "$dataset" \
         --minsup-ratios "$MINSUPS_CMD_ARG" \
-        --tx-ratios "100" \
-        --override-default-minsup "$dataset=100" \
+        --tx-ratios "$TX_RATIOS" \
+        --tx-sweep-minsup-mode "$TX_SWEEP_MINSUP_MODE" \
+        --override-default-minsup "$dataset=$TX_SWEEP_BASE_MINSUP_PERCENT" \
         --keep-pattern-files \
         --jobs "$JOBS"
 done

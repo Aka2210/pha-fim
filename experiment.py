@@ -71,6 +71,7 @@ RESULTS_DIR = os.environ.get("RESULTS_DIR", os.path.join(PROJECT_DIR, "results")
 SPMF_JAR    = os.environ.get("SPMF_JAR",    os.path.join(PROJECT_DIR, "tools", "spmf.jar"))
 CICLAD_BIN  = os.environ.get("CICLAD_BIN",  os.path.join(PROJECT_DIR, "tools", "ciclad"))
 HAMM_BIN   = os.environ.get("HAMM_BIN",   os.path.join(PROJECT_DIR, "tools", "hamm"))
+PHA_BIN     = os.environ.get("PHA_BIN",     os.path.join(PROJECT_DIR, "tools", "pha_fim"))
 RANDOM_SEED = int(os.environ.get("RANDOM_SEED", "42"))
 JAVA_CMD    = os.environ.get("JAVA_CMD") or (shutil.which("java") or "java")
 
@@ -140,7 +141,7 @@ DEFAULT_MINSUP = {
 }
 
 # Algorithms we plot
-ALGORITHMS = ["FPGrowth_itemsets", "Eclat", "Hamm", "CICLAD"]
+ALGORITHMS = ["FPGrowth_itemsets", "Eclat", "Hamm", "CICLAD", "PHA"]
 
 
 # ----------------------
@@ -610,6 +611,93 @@ def run_hamm(input_path, output_path, minsup_percent, keep_pattern_files=False, 
         "hamm_peak_mem_kb": mem_kb,
     }
 
+def run_pha(input_path, output_path, minsup_count, keep_pattern_files=False):
+    """
+    Run PHA baseline compiled binary.
+
+    Binary interface:
+      pha_fim --minsup-count <count> <input.spmf> <output_file>
+
+    Notes:
+      - minsup_count is an absolute support threshold (int), not percentage.
+      - Current PHA output_path is not a full pattern file; pattern_count is parsed
+        from stdout as a proxy using "qualified individuals".
+      - If keep_pattern_files=False, output_path will be deleted after parsing.
+
+    Returns:
+      {
+        "runtime_sec": float,
+        "pattern_count": int,      # proxy
+        "max_itemset_len": int,    # currently 0
+        "best_support_found": int,
+        "qualified_individuals": int,
+        "pha_min_sup_count": int,
+        "cmd": str,
+      }
+    """
+    pha_bin = os.environ.get("PHA_BIN") or PHA_BIN
+    if (not os.path.isfile(pha_bin)) or (not os.access(pha_bin, os.X_OK)):
+        raise FileNotFoundError(
+            f"PHA binary not found/executable at: {pha_bin}. "
+            f"Build it into {os.path.join(PROJECT_DIR,'tools','pha_fim')} or set PHA_BIN."
+        )
+
+    cmd = [pha_bin, "--minsup-count", str(int(minsup_count)), str(input_path), str(output_path)]
+
+    t0 = time.perf_counter()
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=None)
+        elapsed = time.perf_counter() - t0
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"PHA failed:\n{proc.stderr}\nCMD: {' '.join(cmd)}")
+
+        runtime_sec = elapsed
+        best_support = 0
+        qualified = 0
+        parsed_min_sup_count = int(minsup_count)
+
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+
+            if "Time Elapsed:" in line:
+                try:
+                    runtime_sec = float(line.split(":")[1].strip().split()[0]) / 1000.0
+                except Exception:
+                    pass
+
+            elif "min_sup_count:" in line:
+                try:
+                    parsed_min_sup_count = int(line.split("min_sup_count:")[1].strip())
+                except Exception:
+                    pass
+
+            elif "[GPU FIM] best support found =" in line:
+                m1 = re.search(r"best support found\s*=\s*(\d+)", line)
+                m2 = re.search(r"qualified individuals\s*=\s*(\d+)", line)
+                if m1:
+                    best_support = int(m1.group(1))
+                if m2:
+                    qualified = int(m2.group(1))
+
+        pattern_count = qualified   # proxy
+        max_len = 0
+
+        if not keep_pattern_files:
+            safe_unlink(output_path)
+
+        return {
+            "runtime_sec": runtime_sec,
+            "pattern_count": pattern_count,
+            "max_itemset_len": max_len,
+            "best_support_found": best_support,
+            "qualified_individuals": qualified,
+            "pha_min_sup_count": parsed_min_sup_count,
+            "cmd": " ".join(cmd),
+        }
+
+    except Exception as e:
+        raise RuntimeError(f"PHA execution error: {e}")
 
 def parse_ciclad_log(log_path):
     """
@@ -913,16 +1001,15 @@ def worker_txratio_point(ds, r, spmf_path, nbr_items, n_tx_full, ms_default, tx_
                 return cache_tx[k_old]
         return None
 
-    for alg in [a for a in baselines if a in {"FPGrowth_itemsets", "Eclat", "Hamm"}]:
+    for alg in [a for a in baselines if a in {"FPGrowth_itemsets", "Eclat", "Hamm", "PHA"}]:
         cached = _cache_lookup(alg)
         if cached is not None:
             recs.append(cached)
             continue
 
         out_file = os.path.join(ds_dir, f"{alg}_tx{int(r)}.txt")
+
         if alg == "Hamm":
-            # Hamm internally sets minsup_count = ceil(minsup_rate * N_sub).
-            # In fixed-count mode, avoid a possible off-by-one due to float rounding by nudging rate slightly down.
             hamm_minsup_percent = float(effective_minsup_percent)
             if mode == "count" and fixed_minsup_count is not None:
                 hamm_minsup_percent = max(0.0, (float(fixed_minsup_count) - 1e-6) / max(1, int(n_sub)) * 100.0)
@@ -932,6 +1019,14 @@ def worker_txratio_point(ds, r, spmf_path, nbr_items, n_tx_full, ms_default, tx_
                 keep_pattern_files=keep_pattern_files,
                 minsup_count_filter=spmf_filter_count
             )
+
+        elif alg == "PHA":
+            m = run_pha(
+                sub_path, out_file,
+                minsup_count=int(minsup_count_threshold),
+                keep_pattern_files=keep_pattern_files
+            )
+
         else:
             m = run_spmf(
                 alg, sub_path, out_file,
@@ -940,7 +1035,7 @@ def worker_txratio_point(ds, r, spmf_path, nbr_items, n_tx_full, ms_default, tx_
                 minsup_count_filter=spmf_filter_count
             )
 
-        recs.append({
+        rec = {
             "algorithm": alg,
             "transaction_ratio_percent": float(r),
             "n_transactions_sub": int(n_sub),
@@ -955,7 +1050,14 @@ def worker_txratio_point(ds, r, spmf_path, nbr_items, n_tx_full, ms_default, tx_
             "depth_proxy": int(m["max_itemset_len"]),
             "cmd": m["cmd"],
             "pattern_files_deleted": (not keep_pattern_files),
-        })
+        }
+
+        if alg == "PHA":
+            rec["best_support_found"] = int(m.get("best_support_found", 0))
+            rec["qualified_individuals"] = int(m.get("qualified_individuals", 0))
+            rec["pha_min_sup_count"] = int(m.get("pha_min_sup_count", minsup_count_threshold))
+
+        recs.append(rec)
 
     if "CICLAD" in baselines:
         cached = _cache_lookup("CICLAD")
@@ -1008,23 +1110,33 @@ def worker_minsup_sweep(ds, spmf_path, dat_path, n_tx, nbr_items, minsup_ratios,
     recs = []
 
     for ms in minsup_ratios:
-        for alg in [a for a in baselines if a in {"FPGrowth_itemsets", "Eclat", "Hamm"}]:
+        for alg in [a for a in baselines if a in {"FPGrowth_itemsets", "Eclat", "Hamm", "PHA"}]:
             key = (alg, float(ms), None)
             if resume and key in cache_ms:
                 recs.append(cache_ms[key])
                 continue
 
             out_file = os.path.join(ds_dir, f"{alg}_ms{ms}.txt")
+
             if alg == "Hamm":
                 m = run_hamm(
                     spmf_path, out_file,
                     float(ms),
                     keep_pattern_files=keep_pattern_files
                 )
+
+            elif alg == "PHA":
+                pha_count = int(math.ceil(float(ms) / 100.0 * n_tx))
+                m = run_pha(
+                    spmf_path, out_file,
+                    minsup_count=pha_count,
+                    keep_pattern_files=keep_pattern_files
+                )
+
             else:
                 m = run_spmf(alg, spmf_path, out_file, ms, keep_pattern_files=keep_pattern_files)
 
-            recs.append({
+            rec = {
                 "algorithm": alg,
                 "transaction_ratio_percent": 100.0,
                 "minsup_percent": float(ms),
@@ -1033,7 +1145,15 @@ def worker_minsup_sweep(ds, spmf_path, dat_path, n_tx, nbr_items, minsup_ratios,
                 "depth_proxy": int(m["max_itemset_len"]),
                 "cmd": m["cmd"],
                 "pattern_files_deleted": (not keep_pattern_files),
-            })
+            }
+
+            if alg == "PHA":
+                rec["minsup_count"] = int(pha_count)
+                rec["best_support_found"] = int(m.get("best_support_found", 0))
+                rec["qualified_individuals"] = int(m.get("qualified_individuals", 0))
+                rec["pha_min_sup_count"] = int(m.get("pha_min_sup_count", pha_count))
+
+            recs.append(rec)
 
     if "CICLAD" in baselines:
         ciclad_counts = [int(math.ceil(ms/100.0 * n_tx)) for ms in minsup_ratios]
@@ -1100,8 +1220,8 @@ def main():
                         help="dataset=val, comma-separated. e.g., 'mushroom=1,connect4=1,tic-tac-toe=2,car=5,kr-vs-kp=1'")
     parser.add_argument("--tx-sweep-minsup-mode", type=str, default="percent", choices=["percent","count"],
                         help="For tx-ratio sweep: percent=fixed minsup ratio (default); count=fixed minsup COUNT computed from full dataset size (100% tx * minsup ratio).")
-    parser.add_argument("--baselines", type=str, default="FPGrowth_itemsets,Eclat,Hamm,CICLAD",
-                        help="Comma-separated baselines to run. Any subset of: FPGrowth_itemsets,Eclat,Hamm,CICLAD")
+    parser.add_argument("--baselines", type=str, default="FPGrowth_itemsets,Eclat,Hamm,CICLAD,PHA",
+                    help="Comma-separated baselines to run. Any subset of: FPGrowth_itemsets,Eclat,Hamm,CICLAD,PHA")
     parser.add_argument("--resume", action="store_true",
                         help="skip running points already present in metrics JSON and output files")
     parser.add_argument("--force-preprocess", action="store_true",
@@ -1120,7 +1240,7 @@ def main():
 
     # baselines selection
     selected_baselines = [b.strip() for b in args.baselines.split(",") if b.strip()]
-    allowed_baselines = {"FPGrowth_itemsets", "Eclat", "Hamm", "CICLAD"}
+    allowed_baselines = {"FPGrowth_itemsets", "Eclat", "Hamm", "CICLAD", "PHA"}
     for b in selected_baselines:
         if b not in allowed_baselines:
             raise ValueError(f"Unknown baseline: {b}. Allowed: {sorted(allowed_baselines)}")
@@ -1238,31 +1358,31 @@ def main():
             with open(os.path.join(ds_dir, f"metrics_{ds}.json"), "w", encoding="utf-8") as f:
                 json.dump(metrics, f, indent=2)
 
-    
+
     # Plot tx-ratio per dataset
     for ds in datasets:
         ds_dir = os.path.join(RESULTS_DIR, ds)
         ms_default = ms_map.get(ds, 1.0)
         mode = str(args.tx_sweep_minsup_mode).lower()
-    
+
         y_all = {alg: [] for alg in selected_baselines}
         for r in tx_ratios:
             recs = tx_results.get(ds, {}).get(float(r), {})
             for alg in selected_baselines:
                 y_all[alg].append(float(recs[alg]["runtime_sec"]) if alg in recs else float("nan"))
-    
+
         if mode == "count":
             subtitle = f"fixed minsup_count = ceil({ms_default}% * N_full)"
             out_png = os.path.join(ds_dir, f"txratio_runtime_{ds}_count.png")
         else:
             subtitle = f"fixed minsup = {ms_default}%"
             out_png = os.path.join(ds_dir, f"txratio_runtime_{ds}_percent.png")
-    
+
         plot_multi(tx_ratios, y_all,
                    f"{ds} — runtime vs. transaction ratio ({subtitle})",
                    "transaction ratio (%)", "runtime (s)",
                    out_png)
-    
+
     # ----------------------
     # B) minsup ratio sweep (full dataset) in parallel over dataset
     # ----------------------

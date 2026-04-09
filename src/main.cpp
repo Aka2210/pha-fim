@@ -93,9 +93,24 @@ int main(int argc, char *argv[]) {
 
   if (argc < 4)
     return 1;
-  float min_sup_rate = stof(argv[1]);
-  string input_file = argv[2];
-  string output_file = argv[3];
+
+  bool use_count = false;
+  int min_sup_count_arg = -1;
+  float min_sup_rate = -1.0f;
+  string input_file, output_file;
+
+  if (string(argv[1]) == "--minsup-count") {
+    if (argc < 5)
+      return 1;
+    use_count = true;
+    min_sup_count_arg = stoi(argv[2]);
+    input_file = argv[3];
+    output_file = argv[4];
+  } else {
+    min_sup_rate = stof(argv[1]);
+    input_file = argv[2];
+    output_file = argv[3];
+  }
 
   auto start_time = chrono::high_resolution_clock::now();
 
@@ -144,7 +159,12 @@ int main(int argc, char *argv[]) {
   infile.close();
   tmpout.close();
 
-  int min_sup = (int)ceil(min_sup_rate * (double)trans_cnt);
+  int min_sup = 0;
+  if (use_count) {
+    min_sup = min_sup_count_arg;
+  } else {
+    min_sup = (int)ceil(min_sup_rate * (double)trans_cnt);
+  }
 
   vector<char> is_frequent(max_id_found + 1, 0);
 
